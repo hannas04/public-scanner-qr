@@ -30,12 +30,10 @@ button.sec{background:transparent;color:var(--tx);border:1px solid var(--bd)}
 .log{font-size:13px;color:var(--mut);margin:0;padding:0;list-style:none}
 .log li{padding:6px 0;border-bottom:1px solid var(--bd)}
 #login{margin-top:14vh}
-#notice{display:none;padding:10px 12px;border-radius:8px;margin:0 0 12px;background:#fff3cd;color:#664d03;font-size:14px;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
 <div class="wrap">
-<div id="notice" role="status" aria-live="polite"></div>
 
 <div id="login" class="card">
   <h1 style="margin-bottom:12px">Entrance Scanner</h1>
@@ -79,71 +77,31 @@ button.sec{background:transparent;color:var(--tx);border:1px solid var(--bd)}
 const SUPABASE_URL = 'https://fwqsidukxvfitsdnfopg.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ3cXNpZHVreHZmaXRzZG5mb3BnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2NDM5MzUsImV4cCI6MjExMDIxOTkzNX0.sjhynhUJMIJaEC9jxb44VjEziOO9clXtcy0rEVB-J54';
 // =================================================
-const configured = SUPABASE_KEY && !/^\*+$/.test(SUPABASE_KEY) && SUPABASE_KEY !== 'YOUR_SUPABASE_ANON_KEY';
-const sb = window.supabase?.createClient
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
-  : null;
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = id => document.getElementById(id);
 const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let events=[], ev=null, scanner=null, running=false, last={code:'',t:0}, busy=false;
 
-function notice(message){
-  $('notice').textContent=message;
-  $('notice').style.display=message?'block':'none';
-}
 async function boot(){
-  if(!sb){
-    notice('Supabase client did not load. Check your internet connection and reload the page.');
-    return;
-  }
-  if(!configured){
-    notice('Supabase is not configured: replace the masked key in index.html with this project’s anon/publishable key (never a service-role key).');
-    $('loginBtn').disabled=true;
-    return;
-  }
-  try{
-    const {data,error}=await sb.auth.getSession();
-    if(error) throw error;
-    data.session?enter():show(false);
-  }catch(e){
-    notice('Could not connect to Supabase: '+e.message);
-    show(false);
-  }
+  const {data:{session}}=await sb.auth.getSession();
+  session?enter():show(false);
 }
 function show(on){$('login').classList.toggle('hide',on);$('app').classList.toggle('hide',!on)}
 $('loginBtn').onclick=async()=>{
-  try{
-    const {error}=await sb.auth.signInWithPassword({email:$('em').value.trim(),password:$('pw').value});
-    if(error) throw error;
-    notice('');
-    await enter();
-  }catch(e){notice('Login failed: '+e.message)}
+  const {error}=await sb.auth.signInWithPassword({email:$('em').value.trim(),password:$('pw').value});
+  if(error) return alert(error.message);
+  enter();
 };
-$('logoutBtn').onclick=async()=>{
-  if(!await stop()) return;
-  try{await sb.auth.signOut();show(false)}
-  catch(e){notice('Could not log out: '+e.message)}
-};
+$('logoutBtn').onclick=async()=>{await stop();await sb.auth.signOut();show(false)};
 
 async function enter(){
   show(true);
-  try{
-    const {data,error}=await sb.from('events').select('id,name,event_date').order('created_at',{ascending:false});
-    if(error) throw error;
-    if(!data?.length){
-      $('evTitle').textContent='No event found for this login';
-      notice('Supabase returned no events for this account. Check the events table and its access policies.');
-      return;
-    }
-    events=data;
-    $('evSel').innerHTML=events.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('');
-    $('evSel').classList.toggle('hide',events.length<2);
-    notice('');
-    pick();
-  }catch(e){
-    $('evTitle').textContent='Could not load events';
-    notice('Supabase event query failed: '+e.message);
-  }
+  const {data,error}=await sb.from('events').select('id,name,event_date').order('created_at',{ascending:false});
+  if(error||!data.length){$('evTitle').textContent='No event found for this login';return}
+  events=data;
+  $('evSel').innerHTML=events.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('');
+  $('evSel').classList.toggle('hide',events.length<2);
+  pick();
 }
 $('evSel').onchange=pick;
 function pick(){
@@ -151,11 +109,9 @@ function pick(){
   $('evTitle').textContent=ev.name;stats();
 }
 async function stats(){
-  try{
-    const c=async u=>{let q=sb.from('passes').select('id',{count:'exact',head:true}).eq('event_id',ev.id);if(u)q=q.eq('status','used');const {count,error}=await q;if(error)throw error;return count||0};
-    const [t,u]=await Promise.all([c(),c(true)]);
-    $('sTotal').textContent=t;$('sUsed').textContent=u;$('sLeft').textContent=t-u;
-  }catch(e){notice('Supabase pass statistics failed: '+e.message)}
+  const c=async u=>{let q=sb.from('passes').select('id',{count:'exact',head:true}).eq('event_id',ev.id);if(u)q=q.eq('status','used');return (await q).count||0};
+  const [t,u]=await Promise.all([c(),c(true)]);
+  $('sTotal').textContent=t;$('sUsed').textContent=u;$('sLeft').textContent=t-u;
 }
 
 function showRes(cls,title,sub){
@@ -176,7 +132,6 @@ async function check(raw){
   try{
     const {data,error}=await sb.rpc('check_in',{p_code:code});
     if(error) throw error;
-    if(!data||typeof data!=='object') throw new Error('check_in returned an unexpected response. Check the Supabase RPC function.');
     const name=data.guest_name||'';
     if(data.result==='ok'){showRes('ok','✔ Welcome',name||code);addLog(code,'ok '+name);}
     else if(data.result==='used'){
@@ -186,18 +141,25 @@ async function check(raw){
     else if(data.result==='wrong_event'){showRes('bad','Not for this event',code);addLog(code,'wrong event');}
     else{showRes('bad','Invalid code',code);addLog(code,'invalid');}
     stats();
-  }catch(e){showRes('bad','Check-in failed',e.message)}
+  }catch(e){
+    const detail=e?.message||String(e);
+    if(e?.code==='PGRST202'||/could not find the function public\.check_in|schema cache/i.test(detail)){
+      showRes('bad','Scanner setup error','Supabase schema cache does not contain public.check_in(p_code). Deploy the matching database function, verify its argument name, or refresh the schema cache if it was just created.');
+    }else{
+      showRes('bad','Error',detail);
+    }
+  }
   setTimeout(()=>busy=false,600);
 }
 $('manBtn').onclick=()=>{check($('manual').value);$('manual').value=''};
 
 async function start(){
-  if(!window.Html5Qrcode){
-    showRes('bad','Scanner library unavailable','Check your internet connection and reload the page.');
+  if(!window.isSecureContext){
+    alert('Camera access requires HTTPS or localhost. Open the scanner from a secure URL.');
     return;
   }
-  if(!window.isSecureContext&&location.hostname!=='localhost'){
-    showRes('bad','Secure connection required','Open this page over HTTPS to use the camera.');
+  if(typeof Html5Qrcode==='undefined'){
+    alert('The QR scanner library did not load. Check your internet connection and reload the page.');
     return;
   }
   scanner=new Html5Qrcode('reader');
@@ -208,19 +170,11 @@ async function start(){
       last={code:txt,t:now};check(txt);
     });
     running=true;$('camBtn').textContent='Stop camera';
-  }catch(e){
-    scanner=null;
-    showRes('bad','Camera could not start',e.message||String(e));
-  }
+  }catch(e){alert('Camera error: '+e)}
 }
 async function stop(){
-  if(scanner&&running){
-    try{await scanner.stop();scanner.clear();running=false}
-    catch(e){showRes('bad','Camera could not stop',e.message||String(e));return false}
-  }
-  scanner=null;
+  if(scanner&&running){try{await scanner.stop()}catch(e){}scanner.clear();running=false}
   $('camBtn').textContent='Start camera';
-  return true;
 }
 $('camBtn').onclick=()=>running?stop():start();
 boot();
