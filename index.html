@@ -30,6 +30,7 @@ button.sec{background:transparent;color:var(--tx);border:1px solid var(--bd)}
 .log{font-size:13px;color:var(--mut);margin:0;padding:0;list-style:none}
 .log li{padding:6px 0;border-bottom:1px solid var(--bd)}
 #login{margin-top:14vh}
+.r-wait{background:#555}
 </style>
 </head>
 <body>
@@ -80,7 +81,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = id => document.getElementById(id);
 const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let events=[], ev=null, scanner=null, running=false, last={code:'',t:0}, busy=false;
+let events=[], ev=null, scanner=null, running=false;
 
 async function boot(){
   const {data:{session}}=await sb.auth.getSession();
@@ -125,33 +126,56 @@ function addLog(code,txt){
   $('log').prepend(li);
   while($('log').children.length>15) $('log').lastChild.remove();
 }
+let ctx=null;
+function beep(ok){
+  try{
+    ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.frequency.value=ok?880:220;g.gain.value=.15;
+    o.start();o.stop(ctx.currentTime+(ok?.12:.35));
+  }catch(e){}
+}
+const seen=new Map();
 async function check(raw){
   const code=String(raw).trim().toUpperCase();
-  if(!code||busy) return;
-  busy=true;
+  if(!code) return;
+  const now=Date.now();
+  for(const [seenCode,seenAt] of seen){
+    if(seenAt<=now-4000) seen.delete(seenCode);
+  }
+  if(seen.get(code)>now-4000) return;
+  seen.set(code,now);
+  showRes('wait','Checking...',code);
   try{
     const {data,error}=await sb.rpc('check_in',{p_code:code});
     if(error) throw error;
     const name=data.guest_name||'';
-    if(data.result==='ok'){showRes('ok','✔ Welcome',name||code);addLog(code,'ok '+name);}
-    else if(data.result==='used'){
+    if(data.result==='ok'){
+      showRes('ok','✔ Welcome',name||code);addLog(code,'ok '+name);beep(true);
+      $('sUsed').textContent=+$('sUsed').textContent+1;
+      $('sLeft').textContent=Math.max(+$('sLeft').textContent-1,0);
+    }else if(data.result==='used'){
       const t=data.at?new Date(data.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
-      showRes('used','Already used',(name?name+' · ':'')+(t?'scanned at '+t:''));addLog(code,'ALREADY USED');
+      showRes('used','Already used',(name?name+' · ':'')+(t?'scanned at '+t:''));addLog(code,'ALREADY USED');beep(false);
+    }else if(data.result==='wrong_event'){
+      showRes('bad','Not for this event',code);addLog(code,'wrong event');beep(false);
+    }else{
+      showRes('bad','Invalid code',code);addLog(code,'invalid');beep(false);
     }
-    else if(data.result==='wrong_event'){showRes('bad','Not for this event',code);addLog(code,'wrong event');}
-    else{showRes('bad','Invalid code',code);addLog(code,'invalid');}
-    stats();
   }catch(e){
+    seen.delete(code);
     const detail=e?.message||String(e);
     if(e?.code==='PGRST202'||/could not find the function public\.check_in|schema cache/i.test(detail)){
       showRes('bad','Scanner setup error','Supabase schema cache does not contain public.check_in(p_code). Deploy the matching database function, verify its argument name, or refresh the schema cache if it was just created.');
     }else{
       showRes('bad','Error',detail);
     }
+    beep(false);
   }
-  setTimeout(()=>busy=false,600);
 }
-$('manBtn').onclick=()=>{check($('manual').value);$('manual').value=''};
+$('manBtn').onclick=()=>{seen.clear();check($('manual').value);$('manual').value=''};
+setInterval(()=>{if(ev) stats()},20000);
 
 async function start(){
   if(!window.isSecureContext){
@@ -162,13 +186,19 @@ async function start(){
     alert('The QR scanner library did not load. Check your internet connection and reload the page.');
     return;
   }
-  scanner=new Html5Qrcode('reader');
+  try{ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();ctx.resume()}catch(e){}
+  scanner=new Html5Qrcode('reader',{
+    formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
+    experimentalFeatures:{useBarCodeDetectorIfSupported:true},
+    verbose:false
+  });
   try{
-    await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:240,height:240}},txt=>{
-      const now=Date.now();
-      if(txt===last.code&&now-last.t<4000) return;
-      last={code:txt,t:now};check(txt);
-    });
+    await scanner.start({facingMode:'environment'},{
+      fps:20,
+      aspectRatio:1,
+      disableFlip:true,
+      qrbox:(w,h)=>{const s=Math.floor(Math.min(w,h)*0.8);return{width:s,height:s}}
+    },txt=>check(txt));
     running=true;$('camBtn').textContent='Stop camera';
   }catch(e){alert('Camera error: '+e)}
 }
